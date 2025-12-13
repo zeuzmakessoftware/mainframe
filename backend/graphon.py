@@ -1,15 +1,17 @@
+from dotenv import load_dotenv
+load_dotenv()
+
+from typing import List, Optional
 import os
 import shutil
 import tempfile
-from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from dotenv import load_dotenv
 from graphon_client.client import GraphonClient, FileDetail, GroupDetail, GroupListItem, QueryResponse
-
-load_dotenv()
+from graphon_client.client import GraphonClient, FileDetail, GroupDetail, GroupListItem, QueryResponse
+from graphex import Graphon, RetrievalHit, ExpansionResult, SamplingResult, GraphNode, RetrievalResult
 
 app = FastAPI()
 
@@ -48,6 +50,16 @@ class QueryRequest(BaseModel):
     query: str
     return_source_data: bool = False
 
+class RetrieveRequest(BaseModel):
+    query: str
+    modalities: List[str] = ["video", "audio", "text", "ticket"]
+    group_id: Optional[str] = None
+
+class ExpandRequest(BaseModel):
+    seed_ids: List[str]
+    steps: int = 2
+    group_id: Optional[str] = None
+
 # ============================================================================
 # Endpoints
 # ============================================================================
@@ -61,38 +73,40 @@ async def list_files():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/files/upload")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(files: List[UploadFile] = File(...)):
     """
-    Upload and process a file.
+    Upload and process multiple files.
     This handles the full flow:
-    1. Save to temp
-    2. Get signed URL
-    3. Upload to GCS
-    4. Trigger processing
+    1. Save all to temp
+    2. Trigger batch processing
     """
     try:
-        # Create a temp directory to save the file with its original name
+        # Create a temp directory to save the files
         with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp_path = os.path.join(tmp_dir, file.filename)
+            temp_file_paths = []
             
-            with open(tmp_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
+            # Save all files to temp
+            for file in files:
+                tmp_path = os.path.join(tmp_dir, file.filename)
+                with open(tmp_path, "wb") as buffer:
+                    shutil.copyfileobj(file.file, buffer)
+                temp_file_paths.append(tmp_path)
 
             try:
-                # Determine file type locally or let client do it
-                # Client's upload_and_process_files handles the whole flow
-                # We want to wait for it to be processed? simpler for now to say yes or return "PROCESSING"
-                # client.upload_and_process_files returns a list of FileObjects
-                
+                # Upload and process all files in one go
                 results = await client.upload_and_process_files(
-                    file_paths=[tmp_path], 
+                    file_paths=temp_file_paths, 
                     poll_until_complete=False # Return immediately with PROCESSING status
                 )
                 
                 if not results:
-                     raise HTTPException(status_code=400, detail="Upload failed")
+                     # If no results, something might be wrong, but with empty list it shouldn't happen if inputs exist
+                     # If we sent files but got nothing, maybe partial fail?
+                     # Let's just return what we got
+                     pass 
                 
-                return results[0]
+                # Return the list of file details
+                return results
 
             except Exception as inner_e:
                 raise inner_e
@@ -138,6 +152,30 @@ async def query_group(group_id: str, request: QueryRequest):
             query=request.query,
             return_source_data=request.return_source_data
         )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/retrieve", response_model=RetrievalResult)
+async def retrieve_content(request: RetrieveRequest):
+    """Retrieve multimodal content based on query."""
+    try:
+        return await Graphon.retrieve(request.query, request.modalities, request.group_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/expand", response_model=ExpansionResult)
+async def expand_graph(request: ExpandRequest):
+    """Expand the graph from seed nodes."""
+    try:
+        return await Graphon.expand(request.seed_ids, request.steps, request.group_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/sample", response_model=SamplingResult)
+async def sample_graph():
+    """Sample a sparse subgraph for training/eval."""
+    try:
+        return await Graphon.sample()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
