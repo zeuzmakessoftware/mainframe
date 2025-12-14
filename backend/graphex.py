@@ -172,14 +172,24 @@ class Graphon:
             my_neighbors = candidates[:3]
             candidates = candidates[3:] # consume
             
-            for n in my_neighbors:
+            for i, n in enumerate(my_neighbors):
                 nodes_map[n.file_id] = Graphon._file_to_node(n)
+                # Connect to seed
                 edges.append(GraphEdge(
                     source=seed.file_id,
                     target=n.file_id,
                     weight=0.8,
-                    relation="related_content" # Generic relation
+                    relation="related_content" 
                 ))
+                
+                # Connect to other neighbors (form a clique/triangle)
+                for other_n in my_neighbors[i+1:]:
+                     edges.append(GraphEdge(
+                        source=n.file_id,
+                        target=other_n.file_id,
+                        weight=0.6,
+                        relation="sibling_content"
+                     ))
         
         # Dynamic Summary Generation
         type_counts = {}

@@ -96,7 +96,7 @@ async def upload_file(files: List[UploadFile] = File(...)):
                 # Upload and process all files in one go
                 results = await client.upload_and_process_files(
                     file_paths=temp_file_paths, 
-                    poll_until_complete=False # Return immediately with PROCESSING status
+                    poll_until_complete=True # Wait for processing to ensure files are ready for grouping
                 )
                 
                 if not results:
@@ -177,6 +177,81 @@ async def sample_graph():
     try:
         return await Graphon.sample()
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================================
+# Supabase / Trails Endpoints
+# ============================================================================
+
+from supabase import create_client, Client
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+supabase: Optional[Client] = None
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception as e:
+        print(f"Warning: Failed to initialize Supabase client: {e}")
+
+class Trail(BaseModel):
+    id: str
+    query: str
+    created_at: str
+    synthesis: Optional[str] = None
+    nodes: Optional[List[dict]] = None
+    edges: Optional[List[dict]] = None
+
+class CreateTrailRequest(BaseModel):
+    query: str
+    synthesis: Optional[str] = None
+    nodes: Optional[List[dict]] = None
+    edges: Optional[List[dict]] = None
+
+@app.get("/trails", response_model=List[Trail])
+async def get_trails():
+    """Get recent trails from Supabase."""
+    if not supabase:
+        # Fallback if unconfigured
+        return []
+    try:
+        response = supabase.table("trails").select("*").order("created_at", desc=True).limit(20).execute()
+        return response.data
+    except Exception as e:
+        print(f"Error fetching trails: {e}")
+        return [] # Return empty on error to avoid breaking UI
+
+@app.post("/trails")
+async def create_trail(request: CreateTrailRequest):
+    """Save a new trail."""
+    if not supabase:
+        return {"status": "skipped", "reason": "supabase_not_configured"}
+    try:
+        # Check if exists to avoid dupes (optional, but good for UX)
+        # For now just insert
+        data = {
+            "query": request.query,
+            "synthesis": request.synthesis,
+            "nodes": request.nodes,
+            "edges": request.edges
+        }
+        response = supabase.table("trails").insert(data).execute()
+        return response.data
+    except Exception as e:
+        print(f"Error creating trail: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/trails/{trail_id}")
+async def delete_trail(trail_id: str):
+    """Delete a trail."""
+    if not supabase:
+         return {"status": "skipped"}
+    try:
+        supabase.table("trails").delete().eq("id", trail_id).execute()
+        return {"status": "success"}
+    except Exception as e:
+        print(f"Error deleting trail: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
